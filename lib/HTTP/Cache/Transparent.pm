@@ -2,7 +2,7 @@ package HTTP::Cache::Transparent;
 
 use strict;
 
-our $VERSION = '0.4';
+our $VERSION = '0.5';
 
 =head1 NAME
 
@@ -51,6 +51,7 @@ use HTTP::Status qw/RC_NOT_MODIFIED RC_OK RC_PARTIAL_CONTENT/;
 use Digest::MD5 qw/md5_hex/;
 use IO::File;
 use File::Copy;
+use Cwd;
 
 my $basepath;
 my $maxage;
@@ -78,6 +79,7 @@ contain files created by HTTP::Cache::Transparent.
 
 =cut 
 
+my $initialized = 0;
 sub init
 {
   my( $arg ) = @_;
@@ -100,9 +102,9 @@ sub init
   # get-method that bypasses LWP::UserAgent. 
   $LWP::Simple::FULL_LWP++;
 
+  unless ($initialized++) {
   $org_simple_request = \&LWP::UserAgent::simple_request;
 
-  {
     no warnings;
     *LWP::UserAgent::simple_request = \&simple_request_cache
   }
@@ -171,7 +173,7 @@ sub simple_request_cache
     my $fh;
     my $meta;
 
-    if( -f $filename )
+    if( -s $filename )
     {
       $fh = new IO::File "< $filename"
         or die "Failed to read from $filename";
@@ -353,12 +355,15 @@ sub remove_old_entries
 {
   if( defined( $basepath ) )
   {
-    my @files = glob($basepath . "*");
+    my $oldcwd = getcwd();
+    chdir( $basepath );
+
+    my @files = glob("*");
     foreach my $file (@files)
     {
-      if( $file !~ m%/[0-9a-f]{32}$% )
+      if( $file !~ m%^[0-9a-f]{32}$% )
       {
-        print STDERR "HTTP::Cache::Transparent: Unknown file found in cache directory: $file\n";
+        print STDERR "HTTP::Cache::Transparent: Unknown file found in cache directory: $basepath$file\n";
       }
       elsif( (-M($file))*24 > $maxage )
       {
@@ -367,6 +372,8 @@ sub remove_old_entries
         unlink( $file );
       }
     }
+
+    chdir( $oldcwd );
   }
 }
 

@@ -2,7 +2,7 @@ package HTTP::Cache::Transparent;
 
 use strict;
 
-our $VERSION = '0.5';
+our $VERSION = '0.6';
 
 =head1 NAME
 
@@ -51,7 +51,14 @@ use HTTP::Status qw/RC_NOT_MODIFIED RC_OK RC_PARTIAL_CONTENT/;
 use Digest::MD5 qw/md5_hex/;
 use IO::File;
 use File::Copy;
+use File::Path;
 use Cwd;
+
+# These are the response-headers that we should store in the
+# cache-entry and recreate when we return a cached response.
+my @cache_headers = qw/Content-Type Content-Encoding
+                       Content-Length Content-Range 
+                       Last-Modified/;
 
 my $basepath;
 my $maxage;
@@ -84,13 +91,21 @@ sub init
 {
   my( $arg ) = @_;
 
-  exists( $arg->{BasePath} ) 
+  defined( $arg->{BasePath} ) 
     or croak( "You must specify a BasePath" ); 
 
   $basepath = $arg->{BasePath};
 
-  -d $basepath
-    or croak( "$basepath is not a directory" ); 
+  if( not -d $basepath )
+  {
+    eval { mkpath($basepath) };
+    if ($@) 
+    {
+      print STDERR "$basepath is not a directory and cannot be created: $@\n";
+      exit 1;
+    }
+      
+  }
 
   # Append a trailing slash if it is missing.
   $basepath =~ s%([^/])$%$1/%;
@@ -193,7 +208,7 @@ sub simple_request_cache
           $r->header( 'If-Modified-Since', $meta->{'Last-Modified'} )
             if exists( $meta->{'Last-Modified'} );
           
-          $r->header( 'ETag', $meta->{ETag} )
+          $r->header( 'If-None-Match', $meta->{ETag} )
             if( exists( $meta->{ETag} ) );
         }
       }
@@ -244,8 +259,11 @@ sub simple_request_cache
         $res->code( RC_OK );
       }
       
-      $res->header( 'Content-Range', $meta->{'Content-Range'} )
-        if defined( $meta->{'Content-Range' } );
+      foreach my $h (@cache_headers)
+      {
+        $res->header( $h, $meta->{$h} )
+        if defined( $meta->{ $h } );
+      }
 
       $res->header( "X-Cached", 1 );
       $res->header( "X-Content-Unchanged", 1 );
@@ -333,8 +351,12 @@ sub write_cache_entry
   $meta->{Range} = $req->header('Range')
     if defined( $req->header('Range') );
   $meta->{Code} = $res->code;
-  $meta->{'Content->Range'} = $res->header('Content-Range')
-    if defined $res->header('Content-Range');
+
+  foreach my $h (@cache_headers)
+  {
+    $meta->{$h} = $res->header( $h )
+      if defined $res->header( $h );
+  }
 
   write_meta( $fh, $meta );
 
@@ -353,7 +375,7 @@ sub urlhash
 
 sub remove_old_entries
 {
-  if( defined( $basepath ) )
+  if( defined( $basepath ) and -d( $basepath ) )
   {
     my $oldcwd = getcwd();
     chdir( $basepath );

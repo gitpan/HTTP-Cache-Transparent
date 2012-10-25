@@ -2,7 +2,7 @@ package HTTP::Cache::Transparent;
 
 use strict;
 
-our $VERSION = '1.0';
+our $VERSION = '1.1';
 
 =head1 NAME
 
@@ -46,7 +46,7 @@ LWP::Request methods) should be used as usual.
 
 use Carp;
 use LWP::UserAgent;
-use HTTP::Status qw/RC_NOT_MODIFIED RC_OK RC_PARTIAL_CONTENT/;
+use HTTP::Status qw/RC_NOT_MODIFIED RC_OK RC_PARTIAL_CONTENT status_message/;
 
 use Digest::MD5 qw/md5_hex/;
 use IO::File;
@@ -239,6 +239,7 @@ sub _simple_request_cache {
         if $verbose;
 
       $res = HTTP::Response->new( $meta->{Code} );
+      $res->request($r);
       _get_from_cachefile( $filename, $fh, $res, $meta );
       $fh->close() 
         if defined $fh;;
@@ -279,8 +280,11 @@ sub _simple_request_cache {
       $fh->close() 
         if defined $fh;;
 
+      my $content = $res->content;
+      $content = "" if not defined $content;
+
       if( defined( $meta->{MD5} ) and 
-                   md5_hex( $res->content ) eq $meta->{MD5} ) {
+                   md5_hex( $content ) eq $meta->{MD5} ) {
         $res->header( "X-Content-Unchanged", 1 );
         print STDERR " unchanged"
           if( $verbose );
@@ -314,6 +318,8 @@ sub _get_from_cachefile {
   
   $fh->close();
   
+  $content = "" if not defined $content;
+
   # Set last-accessed for cache-entry.
   my $mtime = time;
   utime( $mtime, $mtime, $filename );
@@ -334,6 +340,7 @@ sub _get_from_cachefile {
   else {
     $res->code( RC_OK );
   }
+  $res->message(status_message($res->code) || "Unknown code");
   
   foreach my $h (@cache_headers) {
     $res->header( $h, $meta->{$h} )
@@ -383,7 +390,11 @@ sub _write_cache_entry {
   $meta->{Url} = $url;
   $meta->{ETag} = $res->header('ETag') 
     if defined( $res->header('ETag') );
-  $meta->{MD5} = md5_hex( $res->content );
+
+  my $content = $res->content;
+  $content = "" if not defined $content;
+
+  $meta->{MD5} = md5_hex( $content );
   $meta->{Range} = $req->header('Range')
     if defined( $req->header('Range') );
   $meta->{Code} = $res->code;
@@ -396,10 +407,10 @@ sub _write_cache_entry {
 
   _write_meta( $fh, $meta );
 
-  print $fh $res->content;
+  print $fh $content;
   $fh->close;
 
-  move( $out_filename, $filename );
+  move( $out_filename, $filename ) || unlink $out_filename;
 }
 
 sub _urlhash {
@@ -418,10 +429,15 @@ sub _remove_old_entries {
       if( $file !~ m%^[0-9a-f]{32}$% ) {
         print STDERR "HTTP::Cache::Transparent: Unknown file found in cache directory: $basepath$file\n";
       }
-      elsif( (-M($file))*24 > $maxage ) {
-        print STDERR "Deleting $file.\n"
-          if( $verbose );
-        unlink( $file );
+      else {
+	  my $age = (-M $file);
+	  # The file may have disappeared if another process has cleaned
+	  # the cache.
+	  if( defined($age) && ( $age*24 > $maxage ) ) {
+	      print STDERR "Deleting $file.\n"
+		  if( $verbose );
+	      unlink( $file );
+	  }
       }
     }
 
